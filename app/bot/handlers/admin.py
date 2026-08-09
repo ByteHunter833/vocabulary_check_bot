@@ -8,10 +8,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
-from app.bot.keyboards.admin import admin_results_keyboard, admin_vocabulary_preview_keyboard
+from app.bot.keyboards.admin import (
+    admin_checks_keyboard,
+    admin_menu_keyboard,
+    admin_results_keyboard,
+    admin_students_keyboard,
+    admin_vocabulary_preview_keyboard,
+)
 from app.bot.keyboards.checking import start_check_keyboard
-from app.bot.states.admin import AdminVocabularyStates
-from app.bot.utils import format_admin_results
+from app.bot.states.admin import AdminManagementStates, AdminVocabularyStates
+from app.bot.utils import (
+    format_admin_results,
+    format_individual_admin_result,
+    safe_edit_text,
+)
 from app.core.config import settings
 from app.models import User, UserRole
 from app.services.checking_service import CheckingService
@@ -46,10 +56,66 @@ async def _require_admin(message: Message, session: AsyncSession) -> User | None
     user = await _current_user(message, session)
     if user is None:
         return None
-    if user.role != UserRole.ADMIN:
+    if user.role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
         await message.answer("This command is available to admins only.")
         return None
     return user
+
+
+async def _callback_user(callback: CallbackQuery, session: AsyncSession) -> User:
+    return await UserService(session).upsert_telegram_user(
+        TelegramUserData(
+            id=callback.from_user.id,
+            username=callback.from_user.username,
+            first_name=callback.from_user.first_name,
+            last_name=callback.from_user.last_name,
+        )
+    )
+
+
+async def _require_admin_callback(
+    callback: CallbackQuery, session: AsyncSession
+) -> User | None:
+    user = await _callback_user(callback, session)
+    if user.role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
+        await callback.answer("Admins only.", show_alert=True)
+        return None
+    return user
+
+
+async def _require_super_admin_callback(
+    callback: CallbackQuery, session: AsyncSession
+) -> User | None:
+    user = await _callback_user(callback, session)
+    if user.role != UserRole.SUPER_ADMIN:
+        await callback.answer("Super admin only.", show_alert=True)
+        return None
+    return user
+
+
+@router.message(Command("admin"))
+async def admin_menu_command(message: Message, session: AsyncSession) -> None:
+    user = await _require_admin(message, session)
+    if user is None:
+        return
+    await message.answer(
+        "Admin Menu",
+        reply_markup=admin_menu_keyboard(is_super_admin=user.role == UserRole.SUPER_ADMIN),
+    )
+
+
+@router.callback_query(F.data == "admin_menu")
+async def admin_menu_callback(callback: CallbackQuery, session: AsyncSession) -> None:
+    user = await _require_admin_callback(callback, session)
+    if user is None:
+        return
+    if callback.message:
+        await safe_edit_text(
+            callback.message,
+            "Admin Menu",
+            reply_markup=admin_menu_keyboard(is_super_admin=user.role == UserRole.SUPER_ADMIN),
+        )
+    await callback.answer()
 
 
 @router.message(Command("new_check"))
@@ -64,6 +130,24 @@ async def new_check_command(message: Message, state: FSMContext, session: AsyncS
         "predator - an animal that hunts other animals\n"
         "habitat - the natural home of an animal or plant"
     )
+
+
+@router.callback_query(F.data == "admin_new_check")
+async def new_check_callback(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    user = await _require_admin_callback(callback, session)
+    if user is None:
+        return
+    await state.set_state(AdminVocabularyStates.waiting_for_vocabulary)
+    if callback.message:
+        await callback.message.answer(
+            "Send a vocabulary list as text or as a photo.\n\n"
+            "Example:\n"
+            "predator - an animal that hunts other animals\n"
+            "habitat - the natural home of an animal or plant"
+        )
+    await callback.answer()
 
 
 @router.message(AdminVocabularyStates.waiting_for_vocabulary, F.text)
@@ -157,7 +241,7 @@ async def publish_vocabulary(
             last_name=callback.from_user.last_name,
         )
     )
-    if admin.role != UserRole.ADMIN:
+    if admin.role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
         await callback.answer("Admins only.", show_alert=True)
         return
 
@@ -188,7 +272,12 @@ async def publish_vocabulary(
         time_limit_seconds=settings.default_time_limit_seconds,
     )
 
-    students_result = await session.execute(select(User).where(User.role == UserRole.STUDENT))
+    students_result = await session.execute(
+        select(User).where(
+            User.role == UserRole.STUDENT,
+            User.registration_completed.is_(True),
+        )
+    )
     students = list(students_result.scalars())
     for student in students:
         try:
@@ -220,23 +309,124 @@ async def results_command(message: Message, session: AsyncSession) -> None:
     user = await _require_admin(message, session)
     if user is None:
         return
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) != 2 or not parts[1].isdigit():
-        await message.answer("Usage: /results <check_id>")
+    await send_check_picker(message, session)
+
+
+@router.callback_query(F.data == "admin_choose_results")
+async def choose_results_callback(callback: CallbackQuery, session: AsyncSession) -> None:
+    user = await _require_admin_callback(callback, session)
+    if user is None:
         return
-    check_id = int(parts[1])
-    results = await ResultService(session).get_check_results(check_id)
-    await message.answer(
-        format_admin_results(results), reply_markup=admin_results_keyboard(check_id)
-    )
+    checks = await CheckingService(session).list_published_checks()
+    if callback.message:
+        if not checks:
+            await safe_edit_text(
+                callback.message,
+                "No checks published yet.",
+                reply_markup=admin_menu_keyboard(is_super_admin=user.role == UserRole.SUPER_ADMIN),
+            )
+        else:
+            await safe_edit_text(
+                callback.message,
+                "Choose check",
+                reply_markup=admin_checks_keyboard(checks),
+            )
+    await callback.answer()
+
+
+async def send_check_picker(message: Message, session: AsyncSession) -> None:
+    checks = await CheckingService(session).list_published_checks()
+    if not checks:
+        await message.answer("No checks published yet.")
+        return
+    await message.answer("Choose check", reply_markup=admin_checks_keyboard(checks))
 
 
 @router.callback_query(F.data.startswith("admin_results:"))
 async def refresh_results(callback: CallbackQuery, session: AsyncSession) -> None:
+    user = await _require_admin_callback(callback, session)
+    if user is None:
+        return
     check_id = int(str(callback.data).split(":", 1)[1])
     results = await ResultService(session).get_check_results(check_id)
     if callback.message:
-        await callback.message.edit_text(
-            format_admin_results(results), reply_markup=admin_results_keyboard(check_id)
+        await safe_edit_text(
+            callback.message,
+            format_admin_results(results),
+            reply_markup=admin_students_keyboard(results),
         )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_student_result:"))
+async def student_result_callback(callback: CallbackQuery, session: AsyncSession) -> None:
+    user = await _require_admin_callback(callback, session)
+    if user is None:
+        return
+    attempt_id = int(str(callback.data).split(":", 1)[1])
+    result = await ResultService(session).get_attempt_result(attempt_id)
+    if callback.message:
+        await callback.message.answer(format_individual_admin_result(result))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "super_add_admin")
+async def add_admin_callback(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    user = await _require_super_admin_callback(callback, session)
+    if user is None:
+        return
+    await state.set_state(AdminManagementStates.waiting_for_admin_telegram_id)
+    if callback.message:
+        await callback.message.answer("Send the Telegram numeric user ID for the new admin.")
+    await callback.answer()
+
+
+@router.message(Command("add_admin"))
+async def add_admin_command(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    user = await _require_admin(message, session)
+    if user is None:
+        return
+    if user.role != UserRole.SUPER_ADMIN:
+        await message.answer("This command is available to super admins only.")
+        return
+    await state.set_state(AdminManagementStates.waiting_for_admin_telegram_id)
+    await message.answer("Send the Telegram numeric user ID for the new admin.")
+
+
+@router.message(AdminManagementStates.waiting_for_admin_telegram_id, F.text)
+async def receive_admin_id(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    user = await _require_admin(message, session)
+    if user is None:
+        return
+    if user.role != UserRole.SUPER_ADMIN:
+        await message.answer("This command is available to super admins only.")
+        await state.clear()
+        return
+    raw_id = (message.text or "").strip()
+    if not raw_id.isdigit():
+        await message.answer("Please send only a numeric Telegram user ID.")
+        return
+    new_admin = await UserService(session).add_admin_by_telegram_id(int(raw_id))
+    await state.clear()
+    await message.answer(
+        f"Admin access granted.\n\nTelegram ID: {new_admin.telegram_user_id}"
+    )
+
+
+async def _legacy_direct_result(message: Message, session: AsyncSession) -> None:
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        await send_check_picker(message, session)
+        return
+    check_id = int(parts[1])
+    if check_id > 2_147_483_647:
+        await send_check_picker(message, session)
+        return
+    results = await ResultService(session).get_check_results(check_id)
+    await message.answer(
+        format_admin_results(results), reply_markup=admin_results_keyboard(check_id)
+    )

@@ -9,6 +9,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     bot_token: str = ""
     database_url: str = "postgresql+asyncpg://vocab:vocab@localhost:5432/vocab"
+    super_admin_telegram_ids_raw: str = Field(
+        default="", validation_alias="SUPER_ADMIN_TELEGRAM_IDS"
+    )
     admin_telegram_ids_raw: str = Field(default="", validation_alias="ADMIN_TELEGRAM_IDS")
     ocr_provider: str = "tesseract"
     ocr_api_key: str = ""
@@ -24,6 +27,16 @@ class Settings(BaseSettings):
             return set()
         return {
             int(item.strip()) for item in self.admin_telegram_ids_raw.split(",") if item.strip()
+        }
+
+    @property
+    def super_admin_telegram_ids(self) -> set[int]:
+        if not self.super_admin_telegram_ids_raw:
+            return set()
+        return {
+            int(item.strip())
+            for item in self.super_admin_telegram_ids_raw.split(",")
+            if item.strip()
         }
 
 

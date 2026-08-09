@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import Message
 from aiogram.types import User as TelegramUser
+from structlog import get_logger
 
 from app.models import User
 from app.services.grading import grade_label
 from app.services.result_service import display_name
+
+logger = get_logger(__name__)
+
+
+async def safe_edit_text(message: Message, text: str, reply_markup=None) -> None:
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            logger.warning(
+                "message_edit_failed",
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                error=str(exc),
+            )
 
 
 def telegram_user_data(user: TelegramUser) -> dict[str, object]:

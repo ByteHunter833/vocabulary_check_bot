@@ -19,6 +19,9 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(String(255))
     first_name: Mapped[str | None] = mapped_column(String(255))
     last_name: Mapped[str | None] = mapped_column(String(255))
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    patronymic: Mapped[str | None] = mapped_column(String(255))
+    registration_completed: Mapped[bool] = mapped_column(default=False, nullable=False)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -9,6 +9,9 @@ from app.schemas.checks import CheckResults, StudentResult
 
 
 def display_name(user: User) -> str:
+    full_name = " ".join(part for part in [user.display_name, user.patronymic] if part)
+    if full_name:
+        return full_name
     full_name = " ".join(part for part in [user.first_name, user.last_name] if part)
     return full_name or user.username or str(user.telegram_user_id)
 
@@ -42,7 +45,7 @@ class ResultService:
             .order_by(CheckAttempt.percentage.desc(), CheckAttempt.finished_at.asc())
         )
         attempts = list(attempt_result.scalars())
-        top_results = [self._attempt_to_result(attempt) for attempt in attempts[:10]]
+        top_results = [self._attempt_to_result(attempt) for attempt in attempts]
         average = (
             round(sum(attempt.percentage for attempt in attempts) / len(attempts), 2)
             if attempts
