@@ -1,0 +1,17 @@
+{
+  "build": {
+    "builder": "docker",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "command": ["alembic", "upgrade", "head"],
+    "restartPolicy": "on-failure",
+    "numReplicas": 1
+  },
+  "environment": {
+    "DATABASE_URL": "postgresql+asyncpg://vocab:vocab@postgres:5432/vocab"
+  },
+  "staticAssets": {
+    "exclude": ["*.py", "*.pyc", "__pycache__"]
+  }
+}
