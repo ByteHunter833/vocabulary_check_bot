@@ -24,6 +24,10 @@ DEFAULT_TIME_LIMIT_SECONDS=60
 
 Admin IDs must be Telegram numeric user IDs. They are never hardcoded.
 
+> The app accepts `DATABASE_URL` in both `postgresql://` and
+> `postgresql+asyncpg://` form; plain `postgresql://` (what Railway's Postgres
+> plugin exposes) is converted automatically.
+
 ## Local Installation
 
 ```bash
@@ -49,6 +53,27 @@ docker compose up --build
 ```
 
 The API runs on `http://localhost:8000`. The Telegram bot runs in the same application process when `BOT_TOKEN` is set.
+
+## Deploying to Railway
+
+The repo includes `railway.json` and a `Dockerfile` configured for Railway.
+
+1. Create a project on Railway and add a **PostgreSQL** service (v16+).
+2. Add a **service from your GitHub repo** (Dockerfile builder is used).
+3. Set the environment variables:
+   - `BOT_TOKEN` — from @BotFather.
+   - `ADMIN_TELEGRAM_IDS` — comma-separated numeric Telegram IDs.
+   - `SUPER_ADMIN_TELEGRAM_IDS` — optional, for super admins.
+   - `DATABASE_URL` — reference the Postgres service variable:
+     `${{Postgres.DATABASE_URL}}` (the plain `postgresql://` scheme is
+     auto-converted to `postgresql+asyncpg://`).
+   - `OCR_PROVIDER` — `tesseract` is preinstalled in the image; leave `OCR_API_KEY` empty.
+4. Deploy. On start, the container runs `alembic upgrade head` and then serves
+   the FastAPI app on the port Railway assigns via `$PORT`. Migrations run before
+   every start, so no extra steps are needed after deploy.
+
+`railway.json` pins a single replica and an `/health` check; the bot uses long
+polling, so it runs inside the same web process.
 
 ## Telegram Bot Setup
 

@@ -23,7 +23,12 @@ def upgrade() -> None:
     op.add_column("users", sa.Column("patronymic", sa.String(length=255), nullable=True))
     op.add_column(
         "users",
-        sa.Column("registration_completed", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column(
+            "registration_completed",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.false(),
+        ),
     )
     op.execute(
         """
