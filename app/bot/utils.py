@@ -6,7 +6,6 @@ from aiogram.types import User as TelegramUser
 from structlog import get_logger
 
 from app.models import User
-from app.services.grading import grade_label
 from app.services.result_service import display_name
 
 logger = get_logger(__name__)
@@ -32,21 +31,6 @@ def telegram_user_data(user: TelegramUser) -> dict[str, object]:
         "first_name": user.first_name,
         "last_name": user.last_name,
     }
-
-
-def format_student_result(result) -> str:
-    review_words = "\n".join(f"- {word}" for word in result.words_to_review) or "None"
-    return (
-        "Vocabulary Check Complete!\n\n"
-        "Your Result\n\n"
-        f"Score: {result.score}/{result.total_questions}\n"
-        f"Grade: {round(result.percentage)}% ({grade_label(result.percentage)})\n\n"
-        f"Correct: {result.correct_answers}\n"
-        f"Incorrect: {result.incorrect_answers}\n"
-        f"Time expired: {result.expired_answers}\n\n"
-        "Words to review:\n"
-        f"{review_words}"
-    )
 
 
 def format_admin_results(results) -> str:

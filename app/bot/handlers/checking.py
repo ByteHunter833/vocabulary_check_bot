@@ -10,8 +10,9 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
+from app.bot.formatting import answer_feedback, error_text, format_student_result, question_text
 from app.bot.keyboards.checking import checks_keyboard, student_menu_keyboard
-from app.bot.utils import format_student_result, safe_edit_text
+from app.bot.utils import safe_edit_text
 from app.core.database import async_session_factory
 from app.models import QuestionAttempt
 from app.services.checking_service import CheckFlowError, CheckingService
@@ -38,11 +39,11 @@ async def _upsert_user(message_or_callback, session: AsyncSession):
 async def list_checks(message: Message, session: AsyncSession) -> None:
     user = await _upsert_user(message, session)
     if not user.registration_completed:
-        await message.answer("Please register first with /start.")
+        await message.answer(error_text("Please register first with /start."))
         return
     checks = await CheckingService(session).list_published_checks()
     if not checks:
-        await message.answer("No active vocabulary checks are available right now.")
+        await message.answer(error_text("No active vocabulary checks are available right now."))
         return
     await message.answer("Available Checks", reply_markup=checks_keyboard(checks[:10]))
 
@@ -51,14 +52,14 @@ async def list_checks(message: Message, session: AsyncSession) -> None:
 async def list_checks_callback(callback: CallbackQuery, session: AsyncSession) -> None:
     user = await _upsert_user(callback, session)
     if not user.registration_completed:
-        await callback.answer("Please register first with /start.", show_alert=True)
+        await callback.answer(error_text("Please register first with /start."), show_alert=True)
         return
     checks = await CheckingService(session).list_published_checks()
     if callback.message:
         if not checks:
             await safe_edit_text(
                 callback.message,
-                "No active vocabulary checks are available right now.",
+                error_text("No active vocabulary checks are available right now."),
                 reply_markup=student_menu_keyboard(),
             )
         else:
@@ -74,14 +75,14 @@ async def list_checks_callback(callback: CallbackQuery, session: AsyncSession) -
 async def my_results_callback(callback: CallbackQuery, session: AsyncSession) -> None:
     user = await _upsert_user(callback, session)
     if not user.registration_completed:
-        await callback.answer("Please register first with /start.", show_alert=True)
+        await callback.answer(error_text("Please register first with /start."), show_alert=True)
         return
     results = await ResultService(session).get_user_results(user.id)
     if callback.message:
         if not results:
             await safe_edit_text(
                 callback.message,
-                "You do not have completed results yet.",
+                error_text("You do not have completed results yet."),
                 reply_markup=student_menu_keyboard(),
             )
         else:
@@ -89,9 +90,7 @@ async def my_results_callback(callback: CallbackQuery, session: AsyncSession) ->
                 f"{index}. {result.score}/{result.total_questions} - {round(result.percentage)}%"
                 for index, result in enumerate(results[:10], start=1)
             )
-            await safe_edit_text(
-                callback.message, text, reply_markup=student_menu_keyboard()
-            )
+            await safe_edit_text(callback.message, text, reply_markup=student_menu_keyboard())
     await callback.answer()
 
 
@@ -99,17 +98,17 @@ async def my_results_callback(callback: CallbackQuery, session: AsyncSession) ->
 async def resume_check(message: Message, session: AsyncSession, bot: Bot) -> None:
     user = await _upsert_user(message, session)
     if not user.registration_completed:
-        await message.answer("Please register first with /start.")
+        await message.answer(error_text("Please register first with /start."))
         return
     service = CheckingService(session)
     attempt = await service.get_active_attempt_for_user(user)
     if attempt is None:
-        await message.answer("You do not have an active check to resume.")
+        await message.answer(error_text("You do not have an active check to resume."))
         return
     question = await service.get_current_question(attempt.id)
     if question is None:
         result = await ResultService(session).get_attempt_result(attempt.id)
-        await message.answer(format_student_result(result))
+        await message.answer(format_student_result(result), parse_mode="HTML")
         return
     question_message = await _send_question(message.chat.id, question, attempt.total_questions, bot)
     _schedule_timeout(
@@ -126,18 +125,18 @@ async def resume_check(message: Message, session: AsyncSession, bot: Bot) -> Non
 async def start_check(callback: CallbackQuery, session: AsyncSession, bot: Bot) -> None:
     user = await _upsert_user(callback, session)
     if not user.registration_completed:
-        await callback.answer("Please register first with /start.", show_alert=True)
+        await callback.answer(error_text("Please register first with /start."), show_alert=True)
         return
     check_id = int(str(callback.data).split(":", 1)[1])
     try:
         attempt = await CheckingService(session).start_attempt(check_id=check_id, user=user)
     except CheckFlowError as exc:
-        await callback.answer(str(exc), show_alert=True)
+        await callback.answer(error_text(str(exc)), show_alert=True)
         return
 
     question = await CheckingService(session).get_current_question(attempt.id)
     if question is None:
-        await callback.answer("No question is available.", show_alert=True)
+        await callback.answer(error_text("No question is available."), show_alert=True)
         return
     if callback.message:
         question_message = await _send_question(
@@ -160,7 +159,7 @@ async def receive_answer(message: Message, session: AsyncSession, bot: Bot) -> N
         return
     user = await _upsert_user(message, session)
     if not user.registration_completed:
-        await message.answer("Please register first with /start.")
+        await message.answer(error_text("Please register first with /start."))
         return
     service = CheckingService(session)
     attempt = await service.get_active_attempt_for_user(user)
@@ -174,44 +173,27 @@ async def receive_answer(message: Message, session: AsyncSession, bot: Bot) -> N
             answered_at=datetime.now(UTC),
         )
     except CheckFlowError:
-        await message.answer("That answer is no longer active. Use /resume to continue.")
+        await message.answer(
+            error_text("That answer is no longer active. Use /resume to continue.")
+        )
         return
 
     await _send_outcome(message.chat.id, outcome, bot)
 
 
-async def _send_question(
-    chat_id: int, question: QuestionAttempt, total: int, bot: Bot
-) -> Message:
-    return await bot.send_message(chat_id, _question_text(question, total))
-
-
-def _question_text(question: QuestionAttempt, total: int) -> str:
-    remaining_seconds = max(0, int((question.deadline - datetime.now(UTC)).total_seconds()))
-    return (
-        f"Question {question.question_number}/{total}\n\n"
-        f'What does "{question.vocabulary_item.word}" mean?\n\n'
-        f"Time remaining: {remaining_seconds} seconds"
-    )
+async def _send_question(chat_id: int, question: QuestionAttempt, total: int, bot: Bot) -> Message:
+    return await bot.send_message(chat_id, question_text(question, total), parse_mode="HTML")
 
 
 async def _send_outcome(chat_id: int, outcome, bot: Bot) -> None:
-    definition = outcome.question.vocabulary_item.definition
-    if outcome.is_expired:
-        await bot.send_message(chat_id, f"Time's up!\n\nCorrect answer:\n{definition}")
-    elif outcome.is_correct:
-        await bot.send_message(chat_id, "Correct!\n\n+1 point\n\nNext word...")
-    else:
-        await bot.send_message(
-            chat_id, f"Incorrect.\n\nCorrect answer:\n{definition}\n\nNext word..."
-        )
+    await bot.send_message(chat_id, answer_feedback(outcome), parse_mode="HTML")
 
     if outcome.finished:
         async with async_session_factory() as session:
             result = await ResultService(session).get_attempt_result(
                 outcome.question.check_attempt_id
             )
-        await bot.send_message(chat_id, format_student_result(result))
+        await bot.send_message(chat_id, format_student_result(result), parse_mode="HTML")
         return
 
     if outcome.next_question is not None:
@@ -255,13 +237,14 @@ def _schedule_timeout(
                             await _send_outcome(chat_id, outcome, bot)
                         return
 
-                    text = _question_text(question, total_questions)
+                    text = question_text(question, total_questions)
                     if text != last_text:
                         try:
                             await bot.edit_message_text(
                                 text,
                                 chat_id=chat_id,
                                 message_id=message_id,
+                                parse_mode="HTML",
                             )
                             last_text = text
                         except TelegramBadRequest as exc:
