@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.models import (
     Check,
     CheckAttempt,
@@ -34,6 +37,23 @@ class AnswerOutcome:
     is_expired: bool
     finished: bool
     next_question: QuestionAttempt | None
+
+
+def select_attempt_vocabulary_items(
+    items: list[VocabularyItem],
+    *,
+    attempt_id: int,
+    limit: int,
+) -> list[VocabularyItem]:
+    if limit < 1:
+        raise CheckFlowError("Question limit must be at least 1.")
+
+    ordered_items = sorted(items, key=lambda item: (item.position, item.id))
+    if len(ordered_items) <= limit:
+        return ordered_items
+
+    sampler = random.Random(attempt_id)
+    return sampler.sample(ordered_items, limit)
 
 
 class CheckingService:
@@ -85,12 +105,7 @@ class CheckingService:
         if check.status != CheckStatus.PUBLISHED:
             raise CheckFlowError("This check is not available.")
 
-        result = await self.session.execute(
-            select(CheckAttempt)
-            .where(CheckAttempt.check_id == check_id, CheckAttempt.user_id == user.id)
-            .options(selectinload(CheckAttempt.questions))
-        )
-        existing_attempt = result.scalar_one_or_none()
+        existing_attempt = await self._load_attempt_for_user(check_id=check_id, user_id=user.id)
         if existing_attempt is not None:
             if existing_attempt.finished_at is not None:
                 raise CheckFlowError("You already completed this check.")
@@ -103,14 +118,46 @@ class CheckingService:
         attempt = CheckAttempt(
             check_id=check.id,
             user_id=user.id,
-            total_questions=len(items),
+            total_questions=min(settings.questions_per_check, len(items)),
         )
         self.session.add(attempt)
-        await self.session.flush()
-        await self._create_question_attempt(attempt, items[0], 1, check.time_limit_seconds)
-        await self.session.commit()
+
+        try:
+            await self.session.flush()
+            selected_items = select_attempt_vocabulary_items(
+                items,
+                attempt_id=attempt.id,
+                limit=attempt.total_questions,
+            )
+            await self._create_question_attempt(
+                attempt,
+                selected_items[0],
+                1,
+                check.time_limit_seconds,
+            )
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            existing_attempt = await self._load_attempt_for_user(
+                check_id=check_id,
+                user_id=user.id,
+            )
+            if existing_attempt is None:
+                raise CheckFlowError("Could not start this check. Please try again.")
+            if existing_attempt.finished_at is not None:
+                raise CheckFlowError("You already completed this check.")
+            return existing_attempt
+
         await self.session.refresh(attempt, attribute_names=["questions"])
         return attempt
+
+    async def _load_attempt_for_user(self, *, check_id: int, user_id: int) -> CheckAttempt | None:
+        result = await self.session.execute(
+            select(CheckAttempt)
+            .where(CheckAttempt.check_id == check_id, CheckAttempt.user_id == user_id)
+            .options(selectinload(CheckAttempt.questions))
+        )
+        return result.scalar_one_or_none()
 
     async def get_current_question(self, attempt_id: int) -> QuestionAttempt | None:
         result = await self.session.execute(
@@ -203,6 +250,7 @@ class CheckingService:
                 QuestionAttempt.is_expired.is_(False),
             )
             .order_by(QuestionAttempt.question_number.desc())
+            .with_for_update()
             .options(
                 selectinload(QuestionAttempt.vocabulary_item),
                 selectinload(QuestionAttempt.check_attempt)
@@ -218,7 +266,11 @@ class CheckingService:
         check = attempt.check
         answered_numbers = {question.question_number for question in attempt.questions}
         next_number = max(answered_numbers, default=0) + 1
-        items = list(check.vocabulary_list.items)
+        items = select_attempt_vocabulary_items(
+            list(check.vocabulary_list.items),
+            attempt_id=attempt.id,
+            limit=attempt.total_questions or settings.questions_per_check,
+        )
 
         if next_number <= len(items):
             return await self._create_question_attempt(

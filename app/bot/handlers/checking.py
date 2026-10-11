@@ -105,6 +105,13 @@ async def resume_check(message: Message, session: AsyncSession, bot: Bot) -> Non
     if attempt is None:
         await message.answer(error_text("You do not have an active check to resume."))
         return
+    expired_outcome = await service.expire_current_question(
+        attempt_id=attempt.id,
+        now=datetime.now(UTC),
+    )
+    if expired_outcome is not None:
+        await _send_outcome(message.chat.id, expired_outcome, bot)
+        return
     question = await service.get_current_question(attempt.id)
     if question is None:
         result = await ResultService(session).get_attempt_result(attempt.id)
@@ -134,7 +141,18 @@ async def start_check(callback: CallbackQuery, session: AsyncSession, bot: Bot) 
         await callback.answer(error_text(str(exc)), show_alert=True)
         return
 
-    question = await CheckingService(session).get_current_question(attempt.id)
+    service = CheckingService(session)
+    if callback.message:
+        expired_outcome = await service.expire_current_question(
+            attempt_id=attempt.id,
+            now=datetime.now(UTC),
+        )
+        if expired_outcome is not None:
+            await _send_outcome(callback.message.chat.id, expired_outcome, bot)
+            await callback.answer()
+            return
+
+    question = await service.get_current_question(attempt.id)
     if question is None:
         await callback.answer(error_text("No question is available."), show_alert=True)
         return

@@ -1,19 +1,38 @@
 from __future__ import annotations
 
+from hmac import compare_digest
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.database import get_session
 from app.models import Check, VocabularyList
 from app.schemas.checks import CheckDetail, CheckResults, CheckSummary, StudentResult
 from app.services.result_service import ResultService
 
-router = APIRouter(prefix="/api/v1", tags=["checks"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+ApiTokenHeader = Annotated[str | None, Header(alias="X-API-Token")]
+
+
+async def require_api_token(x_api_token: ApiTokenHeader = None) -> None:
+    if not settings.api_token:
+        return
+    if x_api_token is None or not compare_digest(x_api_token, settings.api_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API token",
+        )
+
+
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["checks"],
+    dependencies=[Depends(require_api_token)],
+)
 
 
 @router.get("/checks", response_model=list[CheckSummary])

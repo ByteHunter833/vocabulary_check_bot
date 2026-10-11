@@ -19,7 +19,9 @@ DATABASE_URL=postgresql+asyncpg://vocab:vocab@localhost:5432/vocab
 ADMIN_TELEGRAM_IDS=123456789,987654321
 OCR_PROVIDER=tesseract
 OCR_API_KEY=
+API_TOKEN=
 DEFAULT_TIME_LIMIT_SECONDS=60
+QUESTIONS_PER_CHECK=50
 ```
 
 Admin IDs must be Telegram numeric user IDs. They are never hardcoded.
@@ -68,6 +70,7 @@ The repo includes `railway.json` and a `Dockerfile` configured for Railway.
      `${{Postgres.DATABASE_URL}}` (the plain `postgresql://` scheme is
      auto-converted to `postgresql+asyncpg://`).
    - `OCR_PROVIDER` — `tesseract` is preinstalled in the image; leave `OCR_API_KEY` empty.
+   - `API_TOKEN` — optional token required by `/api/v1/*` routes when set.
 4. Deploy. On start, the container runs `alembic upgrade head` and then serves
    the FastAPI app on the port Railway assigns via `$PORT`. Migrations run before
    every start, so no extra steps are needed after deploy.
@@ -129,6 +132,14 @@ Student:
 pytest
 ```
 
+To include the PostgreSQL user-service regression tests with the local Docker database:
+
+```bash
+TEST_DATABASE_URL=postgresql+asyncpg://vocab:vocab@localhost:5432/vocab pytest
+```
+
+These tests create and remove isolated schemas without modifying application users.
+
 ## Example Vocabulary Input
 
 ```text
@@ -141,3 +152,5 @@ extinct - no longer existing
 ## Notes
 
 V1 uses a deterministic `RuleBasedEvaluator`: normalized exact match first, then keyword matching. OCR is isolated behind `OCRService`; the default implementation uses local Tesseract so it can be replaced later without changing Telegram handlers or checking logic.
+
+Each student attempt uses `QUESTIONS_PER_CHECK` randomly selected vocabulary items from the uploaded list. The selection is stable for that attempt, so resume/restart keeps the same question set.

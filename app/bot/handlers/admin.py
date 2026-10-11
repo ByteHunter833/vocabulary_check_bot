@@ -279,12 +279,13 @@ async def publish_vocabulary(
         )
     )
     students = list(students_result.scalars())
+    question_count = min(settings.questions_per_check, len(item_data))
     for student in students:
         try:
             await bot.send_message(
                 student.telegram_user_id,
                 "Vocabulary Check\n\n"
-                f"You have {len(item_data)} words to check.\n\n"
+                f"You have {question_count} words to check.\n\n"
                 f"You will have {check.time_limit_seconds} seconds for each word.\n\n"
                 "Are you ready?",
                 reply_markup=start_check_keyboard(check.id),
@@ -309,7 +310,7 @@ async def results_command(message: Message, session: AsyncSession) -> None:
     user = await _require_admin(message, session)
     if user is None:
         return
-    await send_check_picker(message, session)
+    await _legacy_direct_result(message, session)
 
 
 @router.callback_query(F.data == "admin_choose_results")

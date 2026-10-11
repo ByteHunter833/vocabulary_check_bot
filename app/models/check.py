@@ -71,6 +71,13 @@ class CheckAttempt(Base):
 
 class QuestionAttempt(Base):
     __tablename__ = "question_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "check_attempt_id",
+            "question_number",
+            name="uq_question_attempt_number",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     check_attempt_id: Mapped[int] = mapped_column(

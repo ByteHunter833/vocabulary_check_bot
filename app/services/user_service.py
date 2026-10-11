@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -16,6 +17,23 @@ class TelegramUserData:
     first_name: str | None
     last_name: str | None
 
+    @classmethod
+    def from_telegram_user(cls, telegram_user) -> TelegramUserData:
+        cleaned_first_name = (
+            None
+            if not telegram_user.first_name or telegram_user.first_name.strip() == "."
+            else telegram_user.first_name.strip()
+        )
+        cleaned_last_name = None if not telegram_user.last_name else telegram_user.last_name.strip()
+        cleaned_username = None if not telegram_user.username else telegram_user.username.strip()
+
+        return cls(
+            id=telegram_user.id,
+            username=cleaned_username,
+            first_name=cleaned_first_name,
+            last_name=cleaned_last_name,
+        )
+
 
 class UserService:
     def __init__(self, session: AsyncSession) -> None:
@@ -23,24 +41,39 @@ class UserService:
 
     async def upsert_telegram_user(self, data: TelegramUserData) -> User:
         configured_role = self._configured_role(data.id)
-        result = await self.session.execute(select(User).where(User.telegram_user_id == data.id))
-        user = result.scalar_one_or_none()
-        if user is None:
-            user = User(
-                telegram_user_id=data.id,
-                username=data.username,
-                first_name=data.first_name,
-                last_name=data.last_name,
-                role=configured_role or UserRole.STUDENT,
-            )
-            self.session.add(user)
-        else:
-            user.username = data.username
-            user.first_name = data.first_name
-            user.last_name = data.last_name
-            if configured_role is not None:
-                user.role = configured_role
+        role = configured_role or UserRole.STUDENT
 
+        cleaned_first_name = None if data.first_name == "." else data.first_name
+        cleaned_username = None if data.username == "." else data.username
+
+        updates = {
+            "username": cleaned_username,
+            "first_name": cleaned_first_name,
+            "last_name": data.last_name,
+            "updated_at": func.now(),
+        }
+        if configured_role is not None:
+            updates["role"] = configured_role
+
+        # Let PostgreSQL resolve duplicate and concurrent registrations atomically.
+        stmt = (
+            insert(User)
+            .values(
+                telegram_user_id=data.id,
+                username=cleaned_username,
+                first_name=cleaned_first_name,
+                last_name=data.last_name,
+                role=role,
+            )
+            .on_conflict_do_update(
+                index_elements=[User.telegram_user_id],
+                set_=updates,
+            )
+            .returning(User)
+        )
+
+        result = await self.session.execute(stmt)
+        user = result.scalar_one()
         await self.session.commit()
         await self.session.refresh(user)
         return user

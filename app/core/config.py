@@ -15,9 +15,11 @@ class Settings(BaseSettings):
     admin_telegram_ids_raw: str = Field(default="", validation_alias="ADMIN_TELEGRAM_IDS")
     ocr_provider: str = "tesseract"
     ocr_api_key: str = ""
+    api_token: str = Field(default="", validation_alias="API_TOKEN")
     app_env: str = "development"
     log_level: str = "INFO"
     default_time_limit_seconds: int = 60
+    questions_per_check: int = Field(default=50, validation_alias="QUESTIONS_PER_CHECK")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -26,6 +28,13 @@ class Settings(BaseSettings):
     def normalize_database_url(cls, value: str) -> str:
         if value.startswith("postgresql://"):
             value = value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return value
+
+    @field_validator("questions_per_check")
+    @classmethod
+    def validate_questions_per_check(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("QUESTIONS_PER_CHECK must be at least 1")
         return value
 
     @property
